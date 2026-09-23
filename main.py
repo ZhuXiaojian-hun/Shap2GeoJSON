@@ -19,11 +19,12 @@ class App(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title("Shap2GeoJSON - 行政区划拆分工具")
-        self.geometry("780x580")
-        self.minsize(700, 500)
+        self.geometry("800x700")
+        self.minsize(720, 600)
         self.shp_var = tk.StringVar()
-        self.col_var = tk.StringVar()
         self.out_var = tk.StringVar()
+        self.sep_var = tk.StringVar(value="_")
+        self.name_preview_var = tk.StringVar(value="示例：（请选择列）")
         self.prec_var = tk.IntVar(value=6)
         self.simplify_var = tk.IntVar(value=100)
         self.wgs_var = tk.BooleanVar(value=True)
@@ -34,6 +35,8 @@ class App(tk.Tk):
         self.sf = None
         self.worker = None
         self.col_map = {}
+        self.col_labels = []
+        self._sample = {}
         self.preview_path = None
         self._build_ui()
         self.after(120, self._poll)
@@ -48,9 +51,23 @@ class App(tk.Tk):
         ttk.Entry(frm, textvariable=self.shp_var).grid(row=0, column=1, sticky="ew", **pad)
         ttk.Button(frm, text="浏览...", command=self._pick_shp).grid(row=0, column=2, **pad)
 
-        ttk.Label(frm, text="选择列名：").grid(row=1, column=0, sticky="w", **pad)
-        self.col_box = ttk.Combobox(frm, textvariable=self.col_var, state="readonly")
-        self.col_box.grid(row=1, column=1, sticky="ew", **pad)
+        ttk.Label(frm, text="输出名（多选列）：").grid(row=1, column=0, sticky="nw", **pad)
+        colfrm = ttk.Frame(frm)
+        colfrm.grid(row=1, column=1, columnspan=2, sticky="ew", **pad)
+        colfrm.columnconfigure(0, weight=1)
+        self.col_list = tk.Listbox(colfrm, selectmode="extended", height=6,
+                                   exportselection=False, activestyle="none")
+        self.col_list.grid(row=0, column=0, sticky="ew")
+        col_sb = ttk.Scrollbar(colfrm, command=self.col_list.yview)
+        col_sb.grid(row=0, column=1, sticky="ns")
+        self.col_list.configure(yscrollcommand=col_sb.set)
+        self.col_list.bind("<<ListboxSelect>>", lambda _e: self._update_name_preview())
+        sub = ttk.Frame(colfrm)
+        sub.grid(row=1, column=0, columnspan=2, sticky="w", pady=(4, 0))
+        ttk.Label(sub, text="分隔符：").pack(side="left")
+        ttk.Entry(sub, width=4, textvariable=self.sep_var).pack(side="left", padx=(0, 12))
+        ttk.Label(sub, textvariable=self.name_preview_var, foreground="#33475b").pack(side="left")
+        self.sep_var.trace_add("write", lambda *_a: self._update_name_preview())
 
         ttk.Label(frm, text="输出目录：").grid(row=2, column=0, sticky="w", **pad)
         ttk.Entry(frm, textvariable=self.out_var).grid(row=2, column=1, sticky="ew", **pad)
@@ -134,6 +151,7 @@ class App(tk.Tk):
             messagebox.showerror("读取失败", str(exc))
             return
         sample = next(iter(self.sf.iter_records()), {}) or {}
+        self._sample = sample
         self.col_map = {}
         labels = []
         for name in self.sf.field_names:
@@ -142,10 +160,17 @@ class App(tk.Tk):
                 label = "%s #%d" % (label, len(labels) + 1)
             self.col_map[label] = name
             labels.append(label)
-        self.col_box["values"] = labels
+        self.col_labels = labels
+        self.col_list.delete(0, "end")
+        for label in labels:
+            self.col_list.insert("end", label)
         guessed = self._guess_column(self.sf.field_names)
-        self.col_var.set(next((lb for lb, real in self.col_map.items() if real == guessed),
-                              labels[0] if labels else ""))
+        default_index = next((i for i, lb in enumerate(labels)
+                              if self.col_map[lb] == guessed), 0 if labels else -1)
+        if default_index >= 0:
+            self.col_list.selection_set(default_index)
+            self.col_list.see(default_index)
+        self._update_name_preview()
         if not self.out_var.get().strip():
             base = os.path.splitext(os.path.basename(path))[0]
             self.out_var.set(os.path.join(os.path.dirname(path), base + "_geojson"))
@@ -153,6 +178,26 @@ class App(tk.Tk):
         self._log("已加载：%s" % os.path.basename(path))
         self._log("几何类型：%s，记录数：%d" % (self.sf.shape_type, len(self.sf)))
         self._log("属性列：%s" % "、".join(self.sf.field_names))
+
+    def _selected_columns(self):
+        return [self.col_map[self.col_labels[i]] for i in self.col_list.curselection()]
+
+    def _update_name_preview(self):
+        columns = self._selected_columns()
+        if not columns:
+            self.name_preview_var.set("示例：（请选择列）")
+            return
+        separator = self.sep_var.get()
+        parts = []
+        for name in columns:
+            value = self._sample.get(name)
+            if value is None:
+                continue
+            text = str(value).strip()
+            if text:
+                parts.append(text)
+        base = converter.sanitize_filename(separator.join(parts), "feature_1")
+        self.name_preview_var.set("示例：" + base + ".geojson")
 
     @staticmethod
     def _format_sample(value):
@@ -203,13 +248,14 @@ class App(tk.Tk):
         if self.worker and self.worker.is_alive():
             return
         path = self.shp_var.get().strip().strip('"')
-        column = self.col_map.get(self.col_var.get().strip(), self.col_var.get().strip())
+        columns = self._selected_columns()
         out_dir = self.out_var.get().strip().strip('"')
+        separator = self.sep_var.get()
         if not path:
             messagebox.showwarning("提示", "请先选择 Shapefile 文件。")
             return
-        if not column:
-            messagebox.showwarning("提示", "请选择拆分列名。")
+        if not columns:
+            messagebox.showwarning("提示", "请选择至少一个拆分列。")
             return
         if not out_dir:
             messagebox.showwarning("提示", "请选择输出目录。")
@@ -219,28 +265,29 @@ class App(tk.Tk):
         self._log("开始转换 ...")
         self.worker = threading.Thread(
             target=self._run_convert,
-            args=(path, column, out_dir, self.prec_var.get(),
+            args=(path, columns, out_dir, self.prec_var.get(),
                   self.wgs_var.get(), self.repair_var.get(),
                   self.simplify_var.get(), self.csv_var.get(),
-                  self.preview_var.get()),
+                  self.preview_var.get(), separator),
             daemon=True,
         )
         self.worker.start()
 
-    def _run_convert(self, path, column, out_dir, precision, wgs, repair, simplify,
-                     export_csv, make_preview):
+    def _run_convert(self, path, columns, out_dir, precision, wgs, repair, simplify,
+                     export_csv, make_preview, separator):
         try:
             result = converter.convert(
-                path, column, out_dir,
+                path, columns, out_dir,
                 precision=precision, keep_crs=not wgs, repair=repair,
                 simplify_meters=simplify, export_csv=export_csv,
+                separator=separator,
                 progress=lambda i, t: self.msg_queue.put(("progress", (i, t))),
                 log=lambda m: self.msg_queue.put(("log", m)),
             )
             if make_preview:
                 try:
                     result["preview_path"] = preview.build_preview(
-                        out_dir, result.get("files"), column,
+                        out_dir, result.get("files"), "、".join(columns),
                         title="Shap2GeoJSON 预览",
                         log=lambda m: self.msg_queue.put(("log", m)),
                     )
@@ -322,11 +369,12 @@ def _run_cli(argv):
         description="按属性列将 Shapefile 拆分为独立 GeoJSON 文件。",
     )
     parser.add_argument("shp", help="输入的 .shp 文件")
-    parser.add_argument("column", help="用作拆分依据的属性列名")
+    parser.add_argument("column", help="用作拆分依据的属性列名，多列用逗号分隔，如 省级码,省")
     parser.add_argument("out_dir", help="输出目录")
     parser.add_argument("--precision", type=int, default=6, help="坐标小数位，默认 6")
     parser.add_argument("--simplify", type=float, default=100.0,
                         help="几何简化容差（米），0=不简化，默认 100")
+    parser.add_argument("--sep", default="_", help="多列文件名的分隔符，默认 _")
     parser.add_argument("--keep-crs", action="store_true", help="保持原始坐标系（默认输出 WGS84）")
     parser.add_argument("--no-repair", action="store_true", help="不修复无效几何")
     parser.add_argument("--no-csv", action="store_true", help="不导出属性表 CSV")
@@ -334,11 +382,12 @@ def _run_cli(argv):
     parser.add_argument("--open-preview", action="store_true", help="生成预览页并用浏览器打开")
     args = parser.parse_args(argv)
 
+    columns = [c for c in (part.strip() for part in args.column.split(",")) if c]
     result = converter.convert(
-        args.shp, args.column, args.out_dir,
+        args.shp, columns, args.out_dir,
         precision=args.precision, keep_crs=args.keep_crs,
         repair=not args.no_repair, simplify_meters=args.simplify,
-        export_csv=not args.no_csv,
+        export_csv=not args.no_csv, separator=args.sep,
         log=lambda m: print(m),
     )
     print("完成：%d 条记录，生成 %d 个文件，输出到 %s"
@@ -346,7 +395,7 @@ def _run_cli(argv):
 
     if not args.no_preview:
         preview_path = preview.build_preview(
-            args.out_dir, result.get("files"), args.column,
+            args.out_dir, result.get("files"), "、".join(columns),
             title="Shap2GeoJSON 预览", log=lambda m: print(m))
         if args.open_preview:
             import webbrowser

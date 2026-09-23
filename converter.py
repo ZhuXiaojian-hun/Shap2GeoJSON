@@ -217,14 +217,18 @@ def list_columns(shp_path: str):
     return Shapefile(shp_path).field_names
 
 
-def convert(shp_path: str, column: str, out_dir: str, precision: int = 6,
+def convert(shp_path: str, column, out_dir: str, precision: int = 6,
             keep_crs: bool = False, repair: bool = True, simplify_meters: float = 0.0,
-            export_csv: bool = True, progress=None, log=None):
+            export_csv: bool = True, separator: str = "_", progress=None, log=None):
     if not os.path.exists(shp_path):
         raise FileNotFoundError("找不到文件：%s" % shp_path)
     sf = Shapefile(shp_path)
-    if column not in sf.field_names:
-        raise ValueError("属性表中不存在列：%s" % column)
+    columns = [column] if isinstance(column, str) else list(column)
+    if not columns:
+        raise ValueError("未指定拆分列")
+    for name in columns:
+        if name not in sf.field_names:
+            raise ValueError("属性表中不存在列：%s" % name)
 
     os.makedirs(out_dir, exist_ok=True)
     transformer = _make_transformer(sf.prj_wkt, keep_crs)
@@ -239,7 +243,7 @@ def convert(shp_path: str, column: str, out_dir: str, precision: int = 6,
     if log:
         mode = "保持原始坐标系" if transformer is None else "转换为 WGS84"
         log("坐标系：%s" % mode)
-        log("记录数：%d，拆分列：%s" % (total, column))
+        log("记录数：%d，拆分列：%s" % (total, ",".join(columns)))
         if do_simplify:
             log("几何简化容差：%g 米" % simplify_meters)
         elif simplify_meters and simplify_meters > 0:
@@ -276,7 +280,15 @@ def convert(shp_path: str, column: str, out_dir: str, precision: int = 6,
                 log("跳过第 %d 条记录：几何退化后为空。" % (idx + 1))
             continue
 
-        base = sanitize_filename(props.get(column), "feature_%d" % (idx + 1))
+        parts = []
+        for name in columns:
+            value = props.get(name)
+            if value is None:
+                continue
+            text = str(value).strip()
+            if text:
+                parts.append(text)
+        base = sanitize_filename(separator.join(parts), "feature_%d" % (idx + 1))
         used[base] = used.get(base, 0) + 1
         filename = base + ".geojson" if used[base] == 1 else "%s_%d.geojson" % (base, used[base])
 
