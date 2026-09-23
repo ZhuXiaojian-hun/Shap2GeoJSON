@@ -11,3 +11,8 @@ OutData/
 
 # 测试数据（体积过大，不进仓库）
 TestDATA/
+
+# 本地辅助文件，不进仓库
+OpenCodeLatest.bat
+OpenCodeNew.bat
+本项目用于将shap行政区划文件转换为GeoJSON.txt
