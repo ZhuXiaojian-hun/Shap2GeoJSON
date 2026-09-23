@@ -1,0 +1,13 @@
+# Python
+__pycache__/
+*.py[cod]
+
+# 打包产物
+build/
+dist/
+
+# 生成的输出
+OutData/
+
+# 测试数据（体积过大，不进仓库）
+TestDATA/
